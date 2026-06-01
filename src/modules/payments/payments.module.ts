@@ -3,13 +3,25 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { PaymentsService } from './payments.service';
 import { PaymentsController } from './payments.controller';
 import { Payment } from './payment.entity';
+import { IdempotencyKey } from './entities/idempotency-key.entity';
 import { WebhookSignatureService } from './webhook-signature.service';
 import { WebhookGuard } from './webhook.guard';
+import { IdempotencyService } from './idempotency.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Payment])],
+  imports: [TypeOrmModule.forFeature([Payment, IdempotencyKey])],
   controllers: [PaymentsController],
-  providers: [PaymentsService, WebhookSignatureService, WebhookGuard],
-  exports: [PaymentsService, WebhookSignatureService, WebhookGuard],
+  providers: [
+    PaymentsService,
+    WebhookSignatureService,
+    WebhookGuard,
+    IdempotencyService,
+  ],
+  exports: [
+    PaymentsService,
+    WebhookSignatureService,
+    WebhookGuard,
+    IdempotencyService,
+  ],
 })
 export class PaymentsModule {}
