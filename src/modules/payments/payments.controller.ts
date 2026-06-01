@@ -22,11 +22,14 @@ import {
   ApiUnauthorizedResponse,
   ApiInternalServerErrorResponse,
   ApiUnprocessableEntityResponse,
+  ApiResponse,
 } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import { Payment } from './payment.entity';
+import { Refund } from './refund.entity';
 import { WebhookThrottle } from '../throttler/throttler.decorator';
 import { WebhookGuard } from './webhook.guard';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
@@ -148,8 +151,10 @@ export class PaymentsController {
       example: { statusCode: 500, message: 'Internal server error' },
     },
   })
-  findOne(@Param('id') id: string) {
-    return this.paymentsService.findOne(id);
+  async findOne(@Param('id') id: string) {
+    const payment = await this.paymentsService.findOne(id);
+    const refunds = await this.paymentsService.getRefunds(id);
+    return { ...payment, refunds };
   }
 
   @WebhookThrottle()
@@ -225,5 +230,83 @@ export class PaymentsController {
   })
   handleWebhook(@Body() webhookDto: PaymentWebhookDto) {
     return this.paymentsService.handleWebhook(webhookDto);
+  }
+
+  @Post(':id/refund')
+  @ApiOperation({
+    summary: 'Refund a payment',
+    description:
+      'Issues a full or partial refund for a completed payment. Creates a refund record and updates payment status.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment UUID to refund',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  @ApiBody({ type: RefundPaymentDto })
+  @ApiCreatedResponse({
+    description: 'Refund processed successfully.',
+    schema: {
+      example: {
+        payment: {
+          id: '123e4567-e89b-12d3-a456-426614174000',
+          amount: '100.00',
+          currency: 'USD',
+          status: 'REFUNDED',
+          refundedAmount: '100.00',
+          createdAt: '2026-01-26T10:00:00.000Z',
+          updatedAt: '2026-01-26T11:00:00.000Z',
+        },
+        refund: {
+          id: '456e7890-e89b-12d3-a456-426614174000',
+          paymentId: '123e4567-e89b-12d3-a456-426614174000',
+          amount: '100.00',
+          reason: 'Customer requested refund',
+          createdAt: '2026-01-26T11:00:00.000Z',
+        },
+      },
+    },
+  })
+  @ApiBadRequestResponse({
+    description: 'Validation failed.',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: ['Refund amount must be a positive number'],
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiNotFoundResponse({
+    description: 'Payment not found.',
+    schema: {
+      example: {
+        statusCode: 404,
+        message:
+          'Payment with ID 123e4567-e89b-12d3-a456-426614174000 not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Payment cannot be refunded (already refunded, pending, or failed).',
+    schema: {
+      example: {
+        statusCode: 409,
+        message: 'Payment is already fully refunded',
+        error: 'Conflict',
+      },
+    },
+  })
+  @ApiInternalServerErrorResponse({
+    description: 'Internal server error.',
+    schema: {
+      example: { statusCode: 500, message: 'Internal server error' },
+    },
+  })
+  refund(@Param('id') id: string, @Body() refundDto: RefundPaymentDto) {
+    return this.paymentsService.refund(id, refundDto);
   }
 }
