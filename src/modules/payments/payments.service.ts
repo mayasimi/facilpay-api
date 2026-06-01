@@ -1,8 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Payment, PaymentStatus } from './payment.entity';
+import { Refund } from './refund.entity';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import { AppLogger } from '../logger/logger.service';
 import { Logger } from 'pino';
@@ -15,6 +17,8 @@ export class PaymentsService {
   constructor(
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(Refund)
+    private readonly refundRepository: Repository<Refund>,
     private readonly dataSource: DataSource,
     appLogger: AppLogger,
     private readonly idempotencyService: IdempotencyService,
@@ -98,6 +102,88 @@ export class PaymentsService {
       throw new NotFoundException(`Payment with ID ${id} not found`);
     }
     return payment;
+  }
+
+  async getRefunds(paymentId: string): Promise<Refund[]> {
+    return await this.refundRepository.find({
+      where: { paymentId },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async refund(
+    id: string,
+    refundDto: RefundPaymentDto,
+  ): Promise<{ payment: Payment; refund: Refund }> {
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    try {
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
+      const payment = await queryRunner.manager.findOneBy(Payment, { id });
+
+      if (!payment) {
+        throw new NotFoundException(`Payment with ID ${id} not found`);
+      }
+
+      if (payment.status === PaymentStatus.PENDING) {
+        throw new ConflictException(
+          'Cannot refund a payment that is still pending',
+        );
+      }
+
+      if (payment.status === PaymentStatus.REFUNDED) {
+        throw new ConflictException('Payment is already fully refunded');
+      }
+
+      if (payment.status === PaymentStatus.FAILED) {
+        throw new ConflictException('Cannot refund a failed payment');
+      }
+
+      const refundAmount =
+        refundDto.amount ??
+        Number(payment.amount) - Number(payment.refundedAmount || 0);
+      const remainingAmount =
+        Number(payment.amount) - Number(payment.refundedAmount || 0);
+
+      if (refundAmount > remainingAmount) {
+        throw new ConflictException(
+          `Refund amount ${refundAmount} exceeds remaining refundable amount ${remainingAmount}`,
+        );
+      }
+
+      const refund = queryRunner.manager.create(Refund, {
+        paymentId: id,
+        amount: refundAmount,
+        reason: refundDto.reason,
+      });
+
+      const savedRefund = await queryRunner.manager.save(refund);
+
+      payment.refundedAmount = Number(payment.refundedAmount || 0) + refundAmount;
+
+      if (payment.refundedAmount >= Number(payment.amount)) {
+        payment.status = PaymentStatus.REFUNDED;
+      } else {
+        payment.status = PaymentStatus.PARTIALLY_REFUNDED;
+      }
+
+      const updatedPayment = await queryRunner.manager.save(payment);
+
+      await queryRunner.commitTransaction();
+      this.logger.info(
+        `Refund processed: ${savedRefund.id} for payment ${id}, amount: ${refundAmount}`,
+      );
+
+      return { payment: updatedPayment, refund: savedRefund };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Refund failed and rolled back: ${error.message}`);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   /**
