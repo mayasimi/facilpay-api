@@ -7,7 +7,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
-  Headers,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -29,6 +29,7 @@ import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import { Payment } from './payment.entity';
 import { WebhookThrottle } from '../throttler/throttler.decorator';
 import { WebhookGuard } from './webhook.guard';
+import { IdempotencyInterceptor } from './idempotency.interceptor';
 
 @ApiTags('payments')
 @Controller('v1/payments')
@@ -36,15 +37,16 @@ export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) { }
 
   @Post()
+  @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({
     summary: 'Create a payment',
     description:
-      'Initiates a new payment record with PENDING status. Supports idempotency via Idempotency-Key header.',
+      'Initiates a new payment record with PENDING status. Supports idempotency via the Idempotency-Key header to safely retry requests without creating duplicates.',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
     description:
-      'Optional unique key for idempotent requests. If provided, duplicate requests with the same key will return the cached response.',
+      'Optional unique key to ensure idempotent payment creation. Keys are valid for 24 hours. Reusing a key with a different request body returns 422.',
     required: false,
     example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
   })
@@ -77,12 +79,11 @@ export class PaymentsController {
   })
   @ApiUnprocessableEntityResponse({
     description:
-      'Unprocessable entity. May occur if idempotency key is reused with a different request body.',
+      'Idempotency key reused with different request body, or other unprocessable entity error.',
     schema: {
       example: {
         statusCode: 422,
         message: 'Idempotency key reused with different request body',
-        error: 'Unprocessable Entity',
       },
     },
   })
